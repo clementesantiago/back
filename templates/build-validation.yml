@@ -1,0 +1,104 @@
+# https://docs.microsoft.com/en-us/azure/devops/pipelines/yaml-schema?view=azure-devops&tabs=schema#resources
+# https://docs.microsoft.com/en-us/azure/devops/pipelines/process/templates?view=azure-devops#using-other-repositories
+name: "$(Date:yyyyMMdd).$(Rev:r)"
+pool:
+  vmImage: ubuntu-latest
+variables:
+  - group: Global-dev
+
+stages:
+  - stage: Build
+    displayName: Build & prepare solution
+
+    jobs:
+      - job: Build
+        displayName: Build Validate Solution
+        steps:
+          - checkout: none
+          - bash: |
+              sourceRepositoryURI=$(System.PullRequest.SourceRepositoryURI) 
+              branchFullName="$(System.PullRequest.SourceBranch)" 
+              branchName=$(echo "$branchFullName" | sed 's|refs/heads/||') 
+              echo "Checkout project $sourceRepositoryURI with Branch: $branchName"
+              projectURL=$(echo "$sourceRepositoryURI" | sed "s/\(https:\/\/\)[^@]*@/\1${PAT}@/") 
+              git clone --branch $branchName $projectURL $(Build.SourcesDirectory) 
+              ls
+            displayName: "Checkout project"
+            env:
+              AZURE_DEVOPS_EXT_PAT: $(System.AccessToken)
+              PAT: $(PAT-PIPELINES)
+
+          - task: Bash@3
+            displayName: Display workspace directories structure
+            inputs:
+              targetType: "inline"
+              script: |
+                find . -type d | sed -e "s/[^-][^\/]*\// |/g" -e "s/|\([^ ]\)/| - \1/"
+              failOnStderr: true
+              workingDirectory: $(Build.SourcesDirectory)
+
+          - task: JavaToolInstaller@0
+            inputs:
+              versionSpec: "17"
+              jdkArchitectureOption: "x64"
+              jdkSourceOption: "PreInstalled"
+
+          - script: | 
+              set -e
+              find "$(Build.SourcesDirectory)" -name "pom.xml" -printf "%d\t%p\n" | sort -n | cut -f2- | while read -r file; do
+                echo "Processing $file" 
+                cd "$(dirname "$file")" 
+                mvn clean install test
+              done 
+            displayName: "Validate Java projects"
+          - script: |
+              set -e
+              # Python project validation: look for requirements/setup/pyproject
+              find "$(Build.SourcesDirectory)" \( -name "requirements.txt" -o -name "setup.py" -o -name "pyproject.toml" \) | while read -r file; do
+                project_dir=$(dirname "$file")
+                echo "Processing Python project: $project_dir"
+                cd "$project_dir" || exit
+                python -m pip install --upgrade pip
+                if [ -f "requirements.txt" ]; then
+                  pip install -r requirements.txt
+                fi
+                if [ -f "setup.py" ]; then
+                  pip install .
+                fi
+                if [ -d "tests" ] || [ -f "pytest.ini" ]; then
+                  pip install pytest
+                  pytest || true
+                fi
+                cd - > /dev/null || exit
+              done
+            displayName: "Validate Python projects"
+          ## Install Node.js
+          - task: NodeTool@0
+            inputs:
+              versionSpec: "18.x"
+            displayName: "Install Node.js"
+
+          - script: |
+              # Function to check if a directory is a React project and run npm commands
+              set -e
+              process_directory() {
+                local dir="$1"
+                if jq -e '.dependencies.react // .devDependencies.react' "$dir/package.json" > /dev/null; then
+                  echo "Processing React project: $dir"
+                  cd "$dir" || exit
+                  # Run your npm commands here
+                  npm --version
+                  npm install react-cookie
+                  npm install
+                  chmod +x node_modules/.bin/react-scripts
+                  #npm run test
+                  npm run build
+                  cd - > /dev/null || exit
+                fi
+              }
+              # Find all package.json files recursively from the base directory
+              find "$(Build.SourcesDirectory)" -name "package.json" | while read -r package_file; do
+                project_dir=$(dirname "$package_file")
+                process_directory "$project_dir"
+              done
+            displayName: "Validate React projects"

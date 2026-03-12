@@ -1,0 +1,134 @@
+parameters:
+  branchName: ""
+  projectName: ""
+  projectPath: ""
+  containerRegistryConnection: ""
+  debug: ""
+  globalEnvironmentGroup: ""
+  globalProjectGroup: ""
+
+jobs:
+  - job: Build
+    displayName: Build & prepare solution
+
+    variables:
+      - group: ${{ parameters.globalEnvironmentGroup }}
+      - group: ${{ parameters.globalProjectGroup }}
+      - name: branchName
+        value: ${{ parameters.branchName }}
+      - name: branchSource
+        value: $[variables['Build.SourceBranchName']]
+      - name: buildId
+        value: $(Build.BuildId)
+      - name: containerRegistryConnection
+        value: ${{ parameters.containerRegistryConnection }}
+      - name: tag
+        value: ${{ parameters.branchName }}-$(Build.BuildId)
+      - name: projectName
+        value: ${{ parameters.projectName }}
+      - name: projectNameLowerCase 
+        value: ${{ lower(parameters.projectName) }}
+      - name: projectPath
+        value: ${{ parameters.projectPath }}
+
+    pool:
+      vmImage: ubuntu-latest # Expects a variable named 'vmImageName' to be defined at the library level
+
+    steps:
+      - checkout: currentproject
+        displayName: "Checkout project"
+        clean: true
+        
+      - script: |
+          echo buildId: $(buildId)
+          echo projectName: $(projectName)        
+          echo branchName: $(branchName)
+          echo branchSource: $(branchSource)
+          echo containerRegistryConnection: $(containerRegistryConnection) - ${{ parameters.containerRegistryConnection }}
+          echo vmImageName: $(vmImageName)
+          echo DefaultWorkingDirectory: $(System.DefaultWorkingDirectory)
+          echo SourcesDirectory: $(Build.SourcesDirectory)
+          echo ArtifactStagingDirectory: $(Build.ArtifactStagingDirectory)
+          echo tag: $(tag)
+          echo $(Build.SourcesDirectory)/$(projectPath)/$(projectName)   
+          echo REACT-APP-BASE-URL: $(REACT-APP-BASE-URL)   
+          pwd
+          echo ========================
+          ls
+          echo ========================
+          ls $(Build.SourcesDirectory)/$(projectPath)/$(projectName)
+          echo ========================
+          cat $(Build.SourcesDirectory)/$(projectPath)/$(projectName)/.env
+        displayName: "Debug - a multi-line script"
+        condition: eq('${{ parameters.debug }}', 'true')
+
+      - task: qetza.replacetokens.replacetokens-task.replacetokens@6
+        displayName: "Replace tokens in param files"
+        inputs:
+          sources: |
+            $(Build.SourcesDirectory)/$(projectPath)/$(projectName)/Dockerfile
+            $(Build.SourcesDirectory)/$(projectPath)/$(projectName)/.env
+            $(Build.SourcesDirectory)/$(projectPath)/$(projectName)/DeploymentFront.yml
+            $(Build.SourcesDirectory)/$(projectPath)/$(projectName)/ngnix.conf
+          tokenPattern: "custom"
+          tokenPrefix: "{#"
+          tokenSuffix: "#}"
+          verbosity: "detailed"
+
+      - script: |
+          echo ========================
+          cat $(Build.SourcesDirectory)/$(projectPath)/$(projectName)/.env
+          cat $(Build.SourcesDirectory)/$(projectPath)/$(projectName)/DeploymentFront.yml          
+        displayName: "Debug - a multi-line script"
+        condition: eq('${{ parameters.debug }}', 'true')
+
+      ## Install Node.js
+      #- task: NodeTool@0
+      #  inputs:
+      #    versionSpec: "14.x"
+      #  displayName: "Install Node.js"
+      #
+      ## npm install
+      #- script: |
+      #    cd $(Build.SourcesDirectory)/$(projectPath)/$(projectName)
+      #    npm ci
+      #  displayName: "npm install"
+      #
+      ## npm build
+      #- script: |
+      #    $(Build.SourcesDirectory)/$(projectPath)/$(projectName)
+      #    npm run build
+      #  displayName: "npm build"
+      #
+      ## npm test
+      #- script: |
+      #    $(Build.SourcesDirectory)/$(projectPath)/$(projectName)
+      #    npm test
+      #  displayName: "npm test"
+      #  env:
+      #    CI: true # This environment variable makes sure that tests run in CI-mode (suitable for pipelines)
+
+      - task: Docker@2
+        displayName: Docker Build and Publish Image
+        condition: and(succeeded(), ne(variables['branchSource'], 'merge'))
+        inputs:
+          command: buildAndPush
+          containerRegistry: ${{ variables.containerRegistryConnection }}
+          repository: $(projectName)
+          Dockerfile: "$(Build.SourcesDirectory)/$(projectPath)/$(projectName)/Dockerfile"
+          tags: "$(tag)"
+
+      # Copy current directory to artifact staging directory
+      - task: CopyFiles@2
+        inputs:
+          SourceFolder: "$(Build.SourcesDirectory)/$(projectPath)/$(projectName)"
+          Contents: "**"
+          TargetFolder: "$(Build.ArtifactStagingDirectory)"
+          OverWrite: true
+          CleanTargetFolder: true
+          displayName: "Copy Files to: $(Build.ArtifactStagingDirectory)"
+
+      - publish: "$(Build.ArtifactStagingDirectory)"
+        displayName: "Publish build artifacts"
+        artifact: drop
+

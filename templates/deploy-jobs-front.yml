@@ -1,0 +1,78 @@
+parameters:
+  branchName: ""
+  projectName: ""
+  debug: ""
+  globalEnvironmentGroup: ""
+  globalProjectGroup: ""
+  env: ""
+  poolName: ""
+  aroNameSpace: ""
+  deleteDeployment: ""
+
+jobs:
+  - deployment: Deploy
+    displayName: Deploy Solution
+    environment: ${{ parameters.env }}
+    pool: ${{ parameters.poolName }}
+    variables:
+      - group: ${{ parameters.globalEnvironmentGroup }}
+      - group: ${{ parameters.globalProjectGroup }}
+      - name: branchName
+        value: ${{ parameters.branchName }}
+      - name: buildId
+        value: $(Build.BuildId)
+      - name: tag
+        value: ${{ parameters.branchName }}-$(Build.BuildId)
+      - name: projectName
+        value: ${{ parameters.projectName }}
+      - name: aroNameSpace
+        value: ${{ parameters.aroNameSpace }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - checkout: none
+            - download: current
+              artifact: drop
+
+            #- download: current
+            #  artifact: "BuildArtifact" # descarga el artefacto del stage anterior
+            #  displayName: 'Download Build Artifact'
+
+            - script: |
+                echo buildId: $(buildId)
+                echo projectName: $(projectName)        
+                echo branchName: $(branchName)
+                echo vmImageName: $(vmImageName)
+                echo DefaultWorkingDirectory: $(System.DefaultWorkingDirectory)
+                echo SourcesDirectory: $(Build.SourcesDirectory)
+                pwd
+                echo ========================
+                cat $(Pipeline.Workspace)/drop/DeploymentFront.yml
+              displayName: "Debug - a multi-line script"
+              condition: eq('${{ parameters.debug }}', 'true')
+
+            - task: oc-cmd@3
+              inputs:
+                connectionType: "OpenShift Connection Service"
+                openshiftService: ${{ parameters.aroconnection }}
+                version: "4.9.7"
+                cmd: "oc delete -f $(Pipeline.Workspace)/drop/DeploymentFront.yml -n ${{ variables.aroNameSpace }}"
+              condition: eq('${{ parameters.deleteDeployment }}', 'Yes')
+              displayName: "Delete Deployment"
+
+            - task: oc-cmd@3
+              inputs:
+                connectionType: "OpenShift Connection Service"
+                openshiftService: ${{ parameters.aroconnection }}
+                version: "4.9.7"
+                cmd: "oc apply -f $(Pipeline.Workspace)/drop/DeploymentFront.yml -n ${{ variables.aroNameSpace }}"
+              displayName: "Apply Deployment"
+
+            - task: oc-cmd@3
+              inputs:
+                connectionType: "OpenShift Connection Service"
+                openshiftService: ${{ parameters.aroconnection }}
+                version: "4.9.7"
+                cmd: "oc logout"
+              displayName: "Logout OC"

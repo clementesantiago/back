@@ -1,0 +1,255 @@
+parameters:
+  branchName: ""
+  projectName: ""
+  projectPath: ""
+  containerRegistryConnection: ""
+  debug: ""
+  globalEnvironmentGroup: ""
+  globalProjectGroup: ""
+  pomFile: ""
+  mavenArgs: ""
+  checkoutLibraryFirmado: ""
+  secureFileList: []
+  replaceFile: ""
+  buildContext: ""
+
+jobs:
+  - job: Build
+    displayName: Build & prepare solution
+
+    variables:
+      - group: ${{ parameters.globalEnvironmentGroup }}
+      - group: ${{ parameters.globalProjectGroup }}
+      - name: branchName
+        value: ${{ parameters.branchName }}
+      - name: branchSource
+        value: $[variables['Build.SourceBranchName']]
+      - name: buildId
+        value: $(Build.BuildId)
+      - name: containerRegistryConnection
+        value: ${{ parameters.containerRegistryConnection }}
+      - name: tag
+        value: ${{ parameters.branchName }}-$(Build.BuildId)
+      - name: projectName
+        value: ${{ parameters.projectName }}
+      - name: projectNameLowerCase
+        value: ${{ lower(parameters.projectName) }}
+      - name: projectPath
+        value: ${{ parameters.projectPath }}
+      - ${{ if ne(parameters.pomFile, '') }}:
+          - name: pomFile
+            value: ${{ parameters.pomFile }}
+      - ${{ else }}:
+          - name: pomFile
+            value: $(projectPath)/pom.xml
+      - name: mavenArgs
+        value: ${{ parameters.mavenArgs }}
+      - name: currentRepoName
+        value: $[ resources.repositories['currentproject'].name ]
+      - name: currentProjectPath
+        value: $(Build.SourcesDirectory)/$(currentRepoName)/$(projectPath)/$(projectName)
+      - name: buildContext
+        value: ${{ parameters.buildContext }}
+
+    pool:
+      vmImage: ubuntu-latest
+
+    steps:
+      - checkout: self
+        displayName: "Checkout self"
+        clean: true
+      - checkout: currentproject
+        displayName: "Checkout currentproject"
+        clean: true
+      - ${{ if ne(parameters.checkoutLibraryFirmado, '') }}:
+          - checkout: libreriaFirmado
+            displayName: "Checkout libreriaFirmado"
+            clean: true
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: "$(Build.SourcesDirectory)/LibreriaFirmado"
+              Contents: "**"
+              TargetFolder: "$(currentProjectPath)"
+              OverWrite: true
+              CleanTargetFolder: false
+              displayName: "Copy Library Files to: $(currentProjectPath)"
+
+      - ${{ each arg in parameters.secureFileList }}:
+          - task: DownloadSecureFile@1
+            name: "SecureFile_${{ arg.key }}"
+            displayName: "Download Secure File - ${{ arg.value }}"
+            inputs:
+              secureFile: "${{ arg.value }}"
+          - script: |
+              echo "Downloading secure file ${{ arg.key }} -> ${{ arg.value }}" 
+              mkdir -p $(currentProjectPath)/securefiles 
+              abs_file=$(SecureFile_${{ arg.key }}.secureFilePath) 
+              file_name=$(basename $abs_file) 
+              file_path=$(dirname $abs_file) 
+              pattern="([a-z0-9]*-)([dev\|uat\|main]*-)(.*)" 
+              new_filename=$file_name 
+              if [[ $file_name =~ $pattern ]]; then 
+                  new_filename="${BASH_REMATCH[1]}${BASH_REMATCH[3]}" 
+                  echo "Renamed '$file_name' to '$new_filename'" 
+              fi 
+              cp $abs_file $(currentProjectPath)/securefiles/$new_filename
+            displayName: "Copy ${{ arg.value }}"
+
+      # Check if this is a Maven project by looking for pom.xml
+      - script: |
+          # detect Maven projects
+          if [ -f "$(currentProjectPath)/pom.xml" ]; then
+            echo "##vso[task.setvariable variable=isMavenProject]true"
+            echo "Java Maven project detected. pom.xml found."
+          else
+            echo "##vso[task.setvariable variable=isMavenProject]false"
+            echo "Not a Java Maven project. No pom.xml found."
+          fi
+          # detect Python projects (requirements.txt, setup.py or pyproject.toml)
+          if [ -f "$(currentProjectPath)/requirements.txt" ] || \
+             [ -f "$(currentProjectPath)/setup.py" ] || \
+             [ -f "$(currentProjectPath)/pyproject.toml" ]; then
+            echo "##vso[task.setvariable variable=isPythonProject]true"
+            echo "Python project detected."
+          else
+            echo "##vso[task.setvariable variable=isPythonProject]false"
+          fi
+        displayName: "Check project type"
+
+
+      - script: |
+          echo buildId: $(buildId)
+          echo projectName: $(projectName)        
+          echo branchName: $(branchName)
+          echo branchSource: $(branchSource)
+          echo containerRegistryConnection: $(containerRegistryConnection) - ${{ parameters.containerRegistryConnection }}
+          echo vmImageName: $(vmImageName)
+          echo DefaultWorkingDirectory: $(System.DefaultWorkingDirectory)
+          echo SourcesDirectory: $(Build.SourcesDirectory)
+          echo ArtifactStagingDirectory: $(Build.ArtifactStagingDirectory)
+          echo tag: $(tag)
+          echo pomFile: $(pomFile)
+          echo $(currentProjectPath)   
+          pwd
+          echo ========================
+          ls $(Build.SourcesDirectory)
+          echo ========================
+          ls $(Build.SourcesDirectory)/$(currentRepoName)/$(projectPath)
+          echo ========================
+          ls $(currentProjectPath)
+        displayName: "Debug - a multi-line script"
+
+      - task: qetza.replacetokens.replacetokens-task.replacetokens@6
+        displayName: "Replace tokens in param files"
+        inputs:
+          sources: |
+            $(currentProjectPath)/Dockerfile
+            $(currentProjectPath)/DeploymentBack.yml
+            $(currentProjectPath)/${{ parameters.replaceFile }}
+          tokenPattern: "custom"
+          tokenPrefix: "{#"
+          tokenSuffix: "#}"
+          verbosity: "detailed"
+
+      - task: JavaToolInstaller@0
+        condition: eq(variables['isMavenProject'], 'true')
+        inputs:
+          versionSpec: "17"
+          jdkArchitectureOption: "x64"
+          jdkSourceOption: "PreInstalled"
+          
+      #- script: 'wget https://repo1.maven.org/maven2/org/apache/maven/apache-maven/3.8.6/apache-maven-3.8.6-bin.zip'
+
+      #- task: ExtractFiles@1
+      #  inputs:
+      #    archiveFilePatterns: 'apache-maven-3.8.6-bin.zip'
+      #    destinationFolder: '$(Build.SourcesDirectory)/maven'    
+     
+
+          # Maven compile and test
+      - task: Maven@3
+        displayName: "Maven compile and test"
+        condition: eq(variables['isMavenProject'], 'true')
+        inputs:
+          mavenPomFile: "$(Build.SourcesDirectory)/$(currentRepoName)/$(pomFile)" # Path to your pom.xml file
+          #goals: "clean compile test package" # Maven goals to execute
+          goals: "clean install" # Maven goals to execute
+          options: "$(mavenArgs)"
+          publishJUnitResults: true # Publish JUnit test results
+          testResultsFiles: "**/surefire-reports/TEST-*.xml" # Path to test results files
+          #Definicion de Maven
+          #mavenVersionOption: "Path"
+          #mavenDirectory: "$(Build.SourcesDirectory)/maven/apache-maven-3.8.6"
+          #mavenSetM2Home: true
+
+      # .NET build tasks (add if needed)
+      - task: DotNetCoreCLI@2
+        displayName: "Restore .NET packages"
+        condition: and(eq(variables['isMavenProject'], 'false'), eq(variables['isPythonProject'], 'false'))
+        inputs:
+          command: 'restore'
+          projects: '$(currentProjectPath)/**/*.csproj'
+          feedsToUse: 'select'
+ 
+      - task: DotNetCoreCLI@2
+        displayName: "Build .NET project"
+        condition: and(eq(variables['isMavenProject'], 'false'), eq(variables['isPythonProject'], 'false'))
+        inputs:
+          command: 'build'
+          projects: '$(currentProjectPath)/**/*.csproj'
+          arguments: '--configuration Release'
+          
+      - script: |
+          echo $(currentProjectPath)   
+          echo ========================
+          cat $(currentProjectPath)/Dockerfile
+          echo ========================
+          cat $(currentProjectPath)/DeploymentBack.yml
+        displayName: "Debug - a multi-line script"
+
+      - task: UsePythonVersion@0
+        condition: eq(variables['isPythonProject'], 'true')
+        inputs:
+          versionSpec: '3.10'
+          addToPath: true
+
+      - script: |
+          python -m pip install --upgrade pip
+          if [ -f "$(currentProjectPath)/requirements.txt" ]; then
+            pip install -r "$(currentProjectPath)/requirements.txt"
+          fi
+          if [ -f "$(currentProjectPath)/setup.py" ]; then
+            pip install .
+          fi
+          # run tests if present
+          if [ -d "$(currentProjectPath)/tests" ] || [ -f "$(currentProjectPath)/pytest.ini" ]; then
+            pip install pytest
+            pytest --junitxml=$(Build.ArtifactStagingDirectory)/pytest.xml || true
+          fi
+        displayName: "Build Python project"
+        condition: eq(variables['isPythonProject'], 'true')
+
+      - task: Docker@2
+        displayName: Docker Build and Publish Image
+        condition: and(succeeded(), ne(variables['branchSource'], 'merge'))
+        inputs:
+          command: buildAndPush
+          containerRegistry: ${{ variables.containerRegistryConnection }}
+          repository: $(projectName)
+          Dockerfile: "$(currentProjectPath)/Dockerfile"
+          buildContext: "$(currentProjectPath)$(buildContext)"
+          tags: "$(tag)"
+
+      # Copy current directory to artifact staging directory
+      - task: CopyFiles@2
+        inputs:
+          SourceFolder: "$(currentProjectPath)"
+          Contents: "**"
+          TargetFolder: "$(Build.ArtifactStagingDirectory)"
+          OverWrite: true
+          CleanTargetFolder: true
+          displayName: "Copy Files to: $(Build.ArtifactStagingDirectory)"
+
+      - publish: "$(Build.ArtifactStagingDirectory)"
+        displayName: "Publish build artifacts"
+        artifact: drop

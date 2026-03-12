@@ -1,0 +1,7 @@
+variables:
+  containerRegistryConnection: SN_NPSI_DWH_NPROD
+  aroBackConnection: SOA_ARO_BACK_DEV
+  aroFrontConnection: SOA_ARO_FRONT_DEV
+  poolName: Pool-ARO-SOA
+  env: dev
+  

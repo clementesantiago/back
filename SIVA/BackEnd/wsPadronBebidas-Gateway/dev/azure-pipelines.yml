@@ -1,0 +1,78 @@
+# https://docs.microsoft.com/en-us/azure/devops/pipelines/yaml-schema?view=azure-devops&tabs=schema#resources
+# https://docs.microsoft.com/en-us/azure/devops/pipelines/process/templates?view=azure-devops#using-other-repositories
+name: "$(Date:yyyyMMdd).$(Rev:r)"
+resources:
+  repositories:
+  - repository: self
+  - repository: currentproject
+    name: A0016_DyP_SisVal_Back
+    ref: dev
+    type: git
+    trigger:
+      branches:
+        include:
+        - dev
+      paths:
+        include:
+        - BackEnd/Prueba
+
+trigger: none
+
+parameters:
+- name: deleteDeployment
+  displayName: Delete Deployment?
+  type: string
+  default: No
+  values:
+  - No
+  - Yes
+
+variables:
+- name: projectName
+  value: Prueba
+- name: projectPath
+  value: BackEnd
+- name: branchName
+  value: dev
+- name: debug
+  value: "true"
+- template: ../../../../templates/dev-connections.yml
+- name: globalEnvironmentGroup
+  value: Global-dev
+- name: globalProjectGroup
+  value: Global-p-contribuyente-bebidas-dev
+- name: aroNameSpace
+  value: pcba-back
+
+stages:
+- stage: Build
+  displayName: Build & prepare solution
+  jobs:
+  - template: ../../../../templates/build-jobs-back.yml
+    parameters:
+      branchName: ${{ variables.branchName }}
+      projectName: ${{ variables.projectName }}
+      projectPath: ${{ variables.projectPath }}
+      globalEnvironmentGroup: ${{ variables.globalEnvironmentGroup }}
+      globalProjectGroup: ${{ variables.globalProjectGroup }}
+      containerRegistryConnection: ${{ variables.containerRegistryConnection }}
+      pomFile: ${{ variables.projectPath }}/${{ variables.projectName }}/pom.xml
+      debug: ${{ variables.debug }}
+
+- stage: Deploy
+  dependsOn: Build
+  condition: and(succeeded(), ne(variables['branchSource'], 'merge'))
+  jobs:
+  - template: ../../../../templates/deploy-jobs-back.yml
+    parameters:
+      branchName: ${{ variables.branchName }}
+      projectName: ${{ variables.projectName }}
+      projectPath: ${{ variables.projectPath }}
+      globalEnvironmentGroup: ${{ variables.globalEnvironmentGroup }}
+      globalProjectGroup: ${{ variables.globalProjectGroup }}
+      aroConnection: ${{ variables.aroBackConnection }}
+      aroNameSpace: ${{ variables.aroNameSpace }}
+      env: ${{ variables.env }}
+      poolName: ${{ variables.poolName }}
+      debug: ${{ variables.debug }}
+      deleteDeployment: ${{ parameters.deleteDeployment }}
