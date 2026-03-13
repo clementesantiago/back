@@ -51,24 +51,52 @@ stages:
                 mvn clean install test
               done 
             displayName: "Validate Java projects"
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.10'
+              addToPath: true
+            displayName: "Setup Python 3.10"
+
           - script: |
               set -e
               # Python project validation: look for requirements/setup/pyproject
               find "$(Build.SourcesDirectory)" \( -name "requirements.txt" -o -name "setup.py" -o -name "pyproject.toml" \) | while read -r file; do
                 project_dir=$(dirname "$file")
-                echo "Processing Python project: $project_dir"
+                echo "====== Processing Python project: $project_dir ======"
                 cd "$project_dir" || exit
                 python -m pip install --upgrade pip
+                
+                echo "Installing dependencies..."
                 if [ -f "requirements.txt" ]; then
                   pip install -r requirements.txt
                 fi
                 if [ -f "setup.py" ]; then
                   pip install .
                 fi
-                if [ -d "tests" ] || [ -f "pytest.ini" ]; then
-                  pip install pytest
-                  pytest || true
+                if [ -f "pyproject.toml" ]; then
+                  pip install -e .
                 fi
+                
+                echo "Running code quality checks..."
+                pip install flake8 black mypy --quiet
+                echo "Flake8: checking syntax errors..."
+                flake8 . --select=E9,F63,F7,F82 --show-source --statistics || true
+                echo "MyPy: type checking..."
+                mypy . --ignore-missing-imports --no-error-summary 2>/dev/null || true
+                
+                echo "Validating FastAPI if present..."
+                if grep -r "from fastapi" . --include="*.py" > /dev/null 2>&1; then
+                  echo "FastAPI detected - installing extras..."
+                  pip install fastapi[all] uvicorn --quiet
+                  python -c "from fastapi import FastAPI; print('✓ FastAPI import validation passed')" || exit 1
+                fi
+                
+                echo "Running tests..."
+                if [ -d "tests" ] || [ -f "pytest.ini" ]; then
+                  pip install pytest pytest-cov --quiet
+                  pytest -v --tb=short || true
+                fi
+                
                 cd - > /dev/null || exit
               done
             displayName: "Validate Python projects"

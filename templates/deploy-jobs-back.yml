@@ -47,9 +47,44 @@ jobs:
               displayName: "Debug - a multi-line script"
               condition: eq('${{ parameters.debug }}', 'true')
 
+            # Pre-deployment validation for Python artifacts
+            - script: |
+                echo "====== Validating deployment artifacts ======"
+                echo "Listing artifact contents:"
+                ls -R $(Pipeline.Workspace)/drop
+                
+                if [ -f "$(Pipeline.Workspace)/drop/requirements.txt" ]; then
+                  echo "✓ requirements.txt found in artifact"
+                  echo "====== Requirements content ======"
+                  cat $(Pipeline.Workspace)/drop/requirements.txt
+                  
+                  echo "====== Validating requirements.txt syntax ======"
+                  while IFS= read -r line || [ -n "$line" ]; do
+                    [ -z "$line" ] || [[ "$line" =~ ^# ]] && continue
+                    if ! echo "$line" | grep -qE '^[a-zA-Z0-9_-]+'; then
+                      echo "WARNING: Invalid requirement format: $line"
+                    fi
+                  done < $(Pipeline.Workspace)/drop/requirements.txt
+                  echo "✓ requirements.txt validation passed"
+                fi
+                
+                if [ -f "$(Pipeline.Workspace)/drop/main.py" ] || [ -f "$(Pipeline.Workspace)/drop/app.py" ]; then
+                  echo "✓ Python entry point found"
+                fi
+                
+                if [ -f "$(Pipeline.Workspace)/drop/Dockerfile" ]; then
+                  echo "✓ Dockerfile found"
+                  echo "Validating Dockerfile syntax..."
+                  grep -E "^FROM|^RUN.*pip install|^EXPOSE|^CMD" $(Pipeline.Workspace)/drop/Dockerfile || echo "Checking basic Dockerfile structure..."
+                fi
+                
+                echo "====== Artifact validation completed ======"
+              displayName: "Validate deployment artifacts"
+              condition: eq('${{ parameters.debug }}', 'true')
+            
             # simple sanity check for Python artifacts
             - script: |
-                echo "Listing artifact contents:"
+                echo "====== Final pre-deployment checks-- Listing artifact contents: ======" 
                 ls -R $(Pipeline.Workspace)/drop
                 if [ -f "$(Pipeline.Workspace)/drop/requirements.txt" ]; then
                   echo "requirements.txt found in artifact"

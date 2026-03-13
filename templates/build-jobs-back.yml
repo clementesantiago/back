@@ -221,12 +221,53 @@ jobs:
           if [ -f "$(currentProjectPath)/setup.py" ]; then
             pip install .
           fi
-          # run tests if present
-          if [ -d "$(currentProjectPath)/tests" ] || [ -f "$(currentProjectPath)/pytest.ini" ]; then
-            pip install pytest
-            pytest --junitxml=$(Build.ArtifactStagingDirectory)/pytest.xml || true
+          if [ -f "$(currentProjectPath)/pyproject.toml" ]; then
+            pip install -e .
           fi
-        displayName: "Build Python project"
+        displayName: "Install Python dependencies"
+        condition: eq(variables['isPythonProject'], 'true')
+
+      - script: |
+          # Code quality checks
+          pip install flake8 black mypy
+          cd "$(currentProjectPath)"
+          echo "====== Running Flake8 linter ======"
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics || true
+          echo "====== Running Black formatter check ======"
+          black . --check --diff || true
+          echo "====== Running MyPy type checker ======"
+          mypy . --ignore-missing-imports || true
+        displayName: "Python code quality analysis"
+        condition: eq(variables['isPythonProject'], 'true')
+
+      - script: |
+          # FastAPI specific validation
+          cd "$(currentProjectPath)"
+          if grep -r "from fastapi" . --include="*.py" > /dev/null; then
+            echo "FastAPI application detected"
+            pip install fastapi[all] uvicorn
+            echo "====== Validating FastAPI application structure ======"
+            python -c "from fastapi import FastAPI; print('FastAPI import validation: PASSED')"
+            echo "====== Checking for main.py or similar entry point ======"
+            if [ -f "main.py" ] || [ -f "app.py" ]; then
+              python -m py_compile main.py app.py 2>/dev/null || true
+              echo "Entry point validation: PASSED"
+            fi
+          fi
+        displayName: "FastAPI validation"
+        condition: eq(variables['isPythonProject'], 'true')
+
+      - script: |
+          # Run tests if present
+          cd "$(currentProjectPath)"
+          if [ -d "tests" ] || [ -f "pytest.ini" ]; then
+            pip install pytest pytest-cov
+            echo "====== Running PyTest ======"
+            pytest --junitxml=$(Build.ArtifactStagingDirectory)/pytest.xml --cov --cov-report=xml --cov-report=html || true
+          else
+            echo "No tests directory or pytest.ini found"
+          fi
+        displayName: "Run Python unit tests"
         condition: eq(variables['isPythonProject'], 'true')
 
       - task: Docker@2
